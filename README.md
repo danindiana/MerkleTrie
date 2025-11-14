@@ -2,6 +2,8 @@
 
 A persistent, append-only Merkle Trie implementation in Erlang for efficient versioned state management with cryptographic proof capabilities.
 
+This is a **sparse Merkle trie** database that can prove both the existence and non-existence of data. It implements an **order-16 radix tree** where every node has 16 children (one per hexadecimal nibble). The tree can be configured to use either RAM or hard drive for storage.
+
 ## Table of Contents
 - [Overview](#overview)
 - [Architecture](#architecture)
@@ -552,6 +554,39 @@ sequenceDiagram
     Trie-->>Client: {Hash, Leaf, _}
 ```
 
+### Sparse Merkle Trie - Proof of Non-Existence
+
+```mermaid
+graph TD
+    ROOT[Root Stem]
+
+    subgraph "Existing Data Path"
+        S1[Stem 0x4]
+        L1[Leaf: Key=0x42, Value=Data]
+    end
+
+    subgraph "Non-Existent Data Path"
+        S2[Stem 0x5]
+        EMPTY[Empty Slot 0xA<br/>Hash: 0x000...000]
+    end
+
+    ROOT -->|nibble 0x4| S1
+    ROOT -->|nibble 0x5| S2
+    S1 -->|nibble 0x2| L1
+    S2 -->|nibble 0xA| EMPTY
+
+    PROOF[Proof of Non-Existence<br/>Shows path to empty slot<br/>with deterministic empty hash]
+
+    EMPTY -.-> PROOF
+
+    style ROOT fill:#ff9,stroke:#333,stroke-width:4px
+    style S1 fill:#9f9,stroke:#333,stroke-width:2px
+    style S2 fill:#9f9,stroke:#333,stroke-width:2px
+    style L1 fill:#9ff,stroke:#333,stroke-width:2px
+    style EMPTY fill:#fcc,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5
+    style PROOF fill:#fcf,stroke:#333,stroke-width:2px
+```
+
 ### Proof System Benefits
 
 ```mermaid
@@ -592,17 +627,31 @@ This MerkleTrie is used in production by:
 
 ## Technical Details
 
+### Radix Tree Structure
+- **Order-16 radix tree**: Each stem node has exactly 16 children (one per nibble value 0x0 through 0xF)
+- **Nibble-based navigation**: Keys are decomposed into 4-bit nibbles for tree traversal
+- **Configurable storage**: Can use RAM or hard drive storage backends
+
+### Sparse Merkle Trie
+This implementation is a **sparse Merkle trie**, which means:
+- **Proof of non-existence**: Can cryptographically prove that data does NOT exist in the trie
+- **Empty nodes optimized**: Empty branches are represented efficiently without storing actual nodes
+- **Complete key space**: Conceptually covers the entire key space, even for keys never inserted
+- **Deterministic empty hash**: Empty positions have a consistent, predetermined hash value
+
 ### Path Encoding
 - Keys are converted to paths of nibbles (4-bit values)
-- Each nibble determines which of 16 children to follow
-- Path length determined by configuration
+- Each nibble determines which of 16 children to follow in a stem node
+- Path length determined by configuration (typically 5-10 nibbles for 20-40 bit keys)
 
 ### Hash Computation
-- Leaf hash: hash(key || value)
-- Stem hash: hash(concatenation of 16 child hashes)
-- Root hash uniquely identifies entire trie state
+- **Leaf hash**: `hash(key || value)`
+- **Stem hash**: `hash(concatenation of 16 child hashes)`
+- **Empty hash**: Predefined zero value for empty positions
+- **Root hash**: Uniquely identifies entire trie state
 
 ### Storage Format
 - Stems and leaves stored separately on disk
-- Pointers reference disk locations
+- Pointers reference disk locations (append-only structure)
 - Configurable sizes for keys, values, hashes, and metadata
+- Each stem stores: 16 types, 16 pointers, 16 hashes
