@@ -1,0 +1,33 @@
+# Development Dockerfile for MerkleTrie
+FROM erlang:27.1-alpine
+
+# Install development tools
+RUN apk add --no-cache \
+    git \
+    make \
+    gcc \
+    g++ \
+    libc-dev \
+    openssl-dev \
+    ncurses-dev \
+    bash \
+    vim \
+    curl \
+    wget \
+    tree \
+    htop
+
+# Install rebar3
+RUN wget https://s3.amazonaws.com/rebar3/rebar3 && \
+    chmod +x rebar3 && \
+    mv rebar3 /usr/local/bin/
+
+# Create working directory
+WORKDIR /workspace
+
+# Set environment variables for development
+ENV REBAR_COLOR=true \
+    TERM=xterm-256color
+
+# Default command (can be overridden)
+CMD ["/bin/bash"]

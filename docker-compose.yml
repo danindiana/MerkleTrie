@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # Main MerkleTrie service
+  trie:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - OTP_VERSION=27.1
+    image: merkletrie:latest
+    container_name: merkletrie
+    ports:
+      - "8080:8080"
+    volumes:
+      - trie_data:/opt/trie/data
+      - ./logs:/opt/trie/log
+    environment:
+      - ERLANG_COOKIE=${ERLANG_COOKIE:-merkletrie_secret_cookie}
+      - NODE_NAME=${NODE_NAME:-trie@localhost}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "beam.smp"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - trie_network
+
+  # Development environment with hot-reload
+  trie-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        - OTP_VERSION=27.1
+    image: merkletrie:dev
+    container_name: merkletrie-dev
+    volumes:
+      - .:/workspace
+      - trie_dev_data:/workspace/data
+      - erlang_cache:/root/.cache/rebar3
+    working_dir: /workspace
+    command: /bin/bash -c "rebar3 shell"
+    stdin_open: true
+    tty: true
+    networks:
+      - trie_network
+    profiles:
+      - dev
+
+  # Test runner service
+  trie-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: merkletrie:test
+    container_name: merkletrie-test
+    volumes:
+      - .:/workspace
+      - erlang_cache:/root/.cache/rebar3
+    working_dir: /workspace
+    command: /bin/bash -c "rebar3 do clean, compile, eunit, ct, proper"
+    networks:
+      - trie_network
+    profiles:
+      - test
+
+  # Benchmarking service
+  trie-bench:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: merkletrie:bench
+    container_name: merkletrie-bench
+    volumes:
+      - .:/workspace
+      - ./benchmark_results:/workspace/tests/current
+    working_dir: /workspace
+    command: /bin/bash -c "./scripts/load-test.sh"
+    networks:
+      - trie_network
+    profiles:
+      - bench
+
+volumes:
+  trie_data:
+    driver: local
+  trie_dev_data:
+    driver: local
+  erlang_cache:
+    driver: local
+
+networks:
+  trie_network:
+    driver: bridge

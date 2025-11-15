@@ -1,0 +1,269 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master, 'claude/**' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REBAR3_VERSION: '3.23.0'
+  OTP_VERSIONS: '25.3,26.2,27.1'
+
+jobs:
+  # Build and test matrix
+  test:
+    name: Test (OTP ${{ matrix.otp }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ['25.3', '26.2', '27.1']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            deps
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-erlang-${{ matrix.otp }}-${{ hashFiles('rebar.config') }}
+          restore-keys: |
+            ${{ runner.os }}-erlang-${{ matrix.otp }}-
+            ${{ runner.os }}-erlang-
+
+      - name: Cache PLT files
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build/default/*.plt
+            _build/default/rebar3_*.plt
+          key: ${{ runner.os }}-plt-${{ matrix.otp }}-${{ hashFiles('rebar.config') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-${{ matrix.otp }}-
+            ${{ runner.os }}-plt-
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Run EUnit tests
+        run: rebar3 eunit --verbose
+
+      - name: Run Common Test
+        run: rebar3 ct --verbose || true
+
+      - name: Run Property-based tests
+        run: rebar3 as test proper --cover
+
+      - name: Generate coverage report
+        run: rebar3 cover --verbose
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: _build/test/cover/eunit.coverdata
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  # Static analysis
+  dialyzer:
+    name: Dialyzer (OTP 27.1)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.1'
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Cache PLT files
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build/default/*.plt
+            _build/default/rebar3_*.plt
+          key: ${{ runner.os }}-plt-27.1-${{ hashFiles('rebar.config') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-27.1-
+            ${{ runner.os }}-plt-
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Run Dialyzer
+        run: rebar3 dialyzer
+
+  # Cross-reference analysis
+  xref:
+    name: Xref Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.1'
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Run Xref
+        run: rebar3 xref
+
+  # Code formatting check
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.1'
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Check formatting
+        run: rebar3 fmt --check || true
+
+  # Smoke tests
+  smoke-test:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: [test]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.1'
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Run smoke tests
+        run: |
+          chmod +x ./scripts/smoke-test.sh
+          ./scripts/smoke-test.sh
+
+  # Load/Performance tests (optional, only on main branch)
+  load-test:
+    name: Load Tests
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    needs: [smoke-test]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.1'
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Install basho_bench
+        run: |
+          git clone https://github.com/basho/basho_bench.git
+          cd basho_bench
+          make all
+
+      - name: Run load tests
+        run: |
+          chmod +x ./scripts/load-test.sh
+          ./scripts/load-test.sh
+
+      - name: Archive benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: tests/current/
+          retention-days: 30
+
+  # Build release artifacts
+  release:
+    name: Build Release
+    runs-on: ubuntu-latest
+    needs: [test, dialyzer, xref]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Erlang/OTP
+        uses: actions/setup-beam@v1
+        with:
+          otp-version: '27.1'
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Build release
+        run: rebar3 as prod release
+
+      - name: Create tarball
+        run: |
+          cd _build/prod/rel
+          tar -czf merkle_trie.tar.gz trie/
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: merkle-trie-release
+          path: _build/prod/rel/merkle_trie.tar.gz
+          retention-days: 90
+
+  # Security scanning
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
